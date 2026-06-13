@@ -1,0 +1,135 @@
+{
+  "theme": {
+    "mode": "dark",
+    "archetype": "1 - Organic & Earthy (Adapted for Dark/Cozy: Nocturnal Earth)",
+    "vibe": "Safe, cozy, intimate, journal-like, respectful, non-clinical. Wraps the user like a warm blanket."
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Cormorant Garamond",
+      "body": "Manrope",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-light tracking-tighter text-[#E8E6E1]",
+      "h2": "text-2xl sm:text-3xl font-medium tracking-tight text-[#E8E6E1]",
+      "h3": "text-xl sm:text-2xl font-medium text-[#E8E6E1]",
+      "body": "text-base font-normal text-[#A3A099] leading-relaxed",
+      "labels": "text-xs font-bold tracking-[0.2em] uppercase text-[#7C9082]"
+    }
+  },
+  "colors": {
+    "background": {
+      "main": "#161615",
+      "surface": "#232321",
+      "surfaceHover": "#2C2C2A",
+      "overlay": "rgba(22, 22, 21, 0.85)"
+    },
+    "text": {
+      "primary": "#E8E6E1",
+      "secondary": "#A3A099",
+      "disabled": "#6B6965"
+    },
+    "brand": {
+      "primary": "#7C9082",
+      "primaryHover": "#677A6D",
+      "accent": "#A96F5D",
+      "highlight": "#D4A373",
+      "danger": "#8C4A4A"
+    },
+    "borders": {
+      "default": "rgba(232, 230, 225, 0.05)",
+      "focus": "#7C9082"
+    }
+  },
+  "layout": {
+    "spacing": {
+      "container": "max-w-4xl mx-auto px-6 sm:px-8",
+      "sectionGap": "gap-12 sm:gap-16",
+      "cardPadding": "p-6 sm:p-8"
+    },
+    "surfaces": {
+      "card": "bg-[#232321] rounded-[2rem] border border-white/5 shadow-[0_8px_32px_rgba(0,0,0,0.12)]",
+      "glass": "backdrop-blur-xl bg-[#161615]/70 border-b border-white/5",
+      "flat": "bg-[#1C1C1A] rounded-2xl"
+    }
+  },
+  "motion": {
+    "pageTransition": "opacity 0.3s ease, transform 0.3s ease",
+    "hover": "transition-all duration-300 ease-out",
+    "framer_motion_variants": {
+      "fadeInUp": {
+        "initial": { "opacity": 0, "y": 10 },
+        "animate": { "opacity": 1, "y": 0 },
+        "transition": { "duration": 0.4, "ease": "easeOut" }
+      }
+    }
+  },
+  "components": {
+    "dashboard_hero": {
+      "description": "Shows current fronter. Uses a large avatar and warm typography. Emphasize comfort.",
+      "classes": "flex flex-col items-center justify-center p-12 bg-[#232321] rounded-[2rem] border border-[#7C9082]/20 relative overflow-hidden"
+    },
+    "quick_switch_button": {
+      "description": "Primary action button to log a switch.",
+      "classes": "bg-[#7C9082] text-[#161615] px-8 py-4 rounded-full font-medium hover:bg-[#677A6D] transition-colors flex items-center justify-center gap-2 shadow-lg shadow-[#7C9082]/10 w-full sm:w-auto"
+    },
+    "timeline_history": {
+      "description": "Vertical log of fronting history and journal entries.",
+      "classes": "border-l-2 border-[#A3A099]/10 pl-8 ml-4 relative space-y-8"
+    },
+    "timeline_dot": {
+      "description": "Dot indicator for timeline items.",
+      "classes": "absolute -left-[21px] top-2 h-10 w-10 rounded-full bg-[#161615] border-4 border-[#232321] flex items-center justify-center"
+    },
+    "alter_card": {
+      "description": "Grid items for the Headmates list. Bento-style, spacious.",
+      "classes": "bg-[#232321] p-6 rounded-[1.5rem] border border-white/5 hover:-translate-y-1 hover:border-[#A3A099]/30 transition-all cursor-pointer flex flex-col gap-4"
+    },
+    "privacy_bucket": {
+      "description": "Card showing friend access settings and trusted people views.",
+      "classes": "p-6 rounded-[1.5rem] border border-white/5 bg-[#1C1C1A] space-y-4"
+    },
+    "input_field": {
+      "description": "Text inputs and textareas for journaling.",
+      "classes": "w-full bg-[#1C1C1A] border border-white/5 rounded-xl px-4 py-3 text-[#E8E6E1] placeholder:text-[#6B6965] focus:outline-none focus:border-[#7C9082] transition-colors"
+    }
+  },
+  "media": {
+    "images": [
+      {
+        "category": "background_glow",
+        "url": "https://images.unsplash.com/photo-1505771215590-c5fa0aec29b8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2ODl8MHwxfHNlYXJjaHwyfHx3YXJtJTIwZ2xvd2luZyUyMGxpZ2h0JTIwZGFyayUyMGFlc3RoZXRpY3xlbnwwfHx8fDE3ODEzNjc0NTB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Soft warm glowing lights, use as a very low opacity fixed background overlay (opacity-10) to give a night-time cozy feel."
+      },
+      {
+        "category": "auth_background",
+        "url": "https://images.unsplash.com/photo-1511207538754-e8555f2bc187?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHw0fHxjb3p5JTIwZGFyayUyMGFlc3RoZXRpYyUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzgxMzY3NDE2fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Dark forest scenery, use for the login/auth page background with a heavy dark overlay (bg-black/60)."
+      },
+      {
+        "category": "avatar_placeholder_1",
+        "url": "https://images.unsplash.com/photo-1749746766518-7d52a30c87cb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMHNvZnQlMjB3YXRlcmNvbG9yJTIwYXZhdGFyfGVufDB8fHx8MTc4MTM2NzQxNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract watercolor landscape for Alter 1 profile picture."
+      },
+      {
+        "category": "avatar_placeholder_2",
+        "url": "https://images.unsplash.com/photo-1533158326339-7f3cf2404354?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMHNvZnQlMjB3YXRlcmNvbG9yJTIwYXZhdGFyfGVufDB8fHx8MTc4MTM2NzQxNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract colored avatar for Alter 2 profile picture."
+      }
+    ],
+    "icons": "lucide-react"
+  },
+  "instructions_to_main_agent": [
+    "Load Google Fonts in the index.html or App CSS: 'Cormorant Garamond' (weights 300,400,500) and 'Manrope' (weights 400,500,600).",
+    "Use standard Tailwind CSS classes. Build custom UI components for layouts; heavily customize Shadcn logic for forms/dialogs.",
+    "Do NOT use pure #000000 or harsh white. Strictly use the provided 'Nocturnal Earth' color palette for all backgrounds, cards, and text to maintain the cozy, safe environment.",
+    "Add 'data-testid' attributes (kebab-case, role-based) to all buttons, inputs, and interactive elements. CRITICAL for testing.",
+    "Ensure the Google Sign-in flow feels integrated and safe, displaying the 'auth_background' image behind the login card.",
+    "Implement the 'Currently Fronting' dashboard using the 'dashboard_hero' styling. Emphasize the alter name using Cormorant Garamond font.",
+    "For the fronting history and journal timeline, ensure dates and timestamps are subtly colored using the brand secondary text color. Use the 'timeline_history' and 'timeline_dot' classes.",
+    "Do NOT use generic borders. Use 'border-white/5' to create extremely subtle separation lines, making it feel like dark paper rather than digital containers.",
+    "The Simply Plural JSON import can be a button triggering a file input, returning mocked success for now, but style the button appropriately.",
+    "Keep spacing very generous. Elements should never feel cramped. Use p-6 or p-8 for cards to give a 'journal page' breathing room."
+  ]
+}

@@ -1,0 +1,144 @@
+"""Backend tests for plural-cozy DID tracker app."""
+import os
+import pytest
+import requests
+
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://alter-tracker-3.preview.emergentagent.com").rstrip("/")
+TOKEN = os.environ.get("TEST_SESSION_TOKEN", "test_session_1781367924851")
+H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+
+@pytest.fixture(scope="session")
+def state():
+    return {}
+
+
+# ---- Auth ----
+def test_me_unauth():
+    r = requests.get(f"{BASE}/api/auth/me")
+    assert r.status_code == 401
+
+
+def test_me_auth():
+    r = requests.get(f"{BASE}/api/auth/me", headers=H)
+    assert r.status_code == 200
+    assert "user_id" in r.json()
+
+
+# ---- Alters CRUD ----
+def test_alter_crud(state):
+    r = requests.post(f"{BASE}/api/alters", json={"name": "TEST_Alice", "pronouns": "she/her", "role": "protector", "color": "#A96F5D", "description": "d"}, headers=H)
+    assert r.status_code == 200
+    a = r.json()
+    assert a["name"] == "TEST_Alice"
+    state["alter_id"] = a["id"]
+
+    r = requests.get(f"{BASE}/api/alters", headers=H)
+    assert r.status_code == 200
+    assert any(x["id"] == state["alter_id"] for x in r.json())
+
+    r = requests.put(f"{BASE}/api/alters/{state['alter_id']}", json={"name": "TEST_Alice2", "pronouns": "they/them", "role": "host", "color": "#7C9082", "description": "x"}, headers=H)
+    assert r.status_code == 200
+    assert r.json()["name"] == "TEST_Alice2"
+
+
+# ---- Fronting ----
+def test_fronting_switch(state):
+    r = requests.post(f"{BASE}/api/fronting/switch", json={"alter_id": state["alter_id"], "note": "n"}, headers=H)
+    assert r.status_code == 200
+    state["fr_id"] = r.json()["id"]
+
+    r = requests.get(f"{BASE}/api/fronting/current", headers=H)
+    assert r.status_code == 200
+    assert any(x["id"] == state["fr_id"] for x in r.json())
+
+
+def test_fronting_cofront_and_end(state):
+    # create a 2nd alter
+    r = requests.post(f"{BASE}/api/alters", json={"name": "TEST_Bob"}, headers=H)
+    aid2 = r.json()["id"]
+    state["alter2"] = aid2
+
+    r = requests.post(f"{BASE}/api/fronting/cofront", json={"alter_id": aid2}, headers=H)
+    assert r.status_code == 200
+    cf_id = r.json()["id"]
+
+    r = requests.get(f"{BASE}/api/fronting/current", headers=H)
+    cur = r.json()
+    # both should be active since cofront doesn't end prior
+    ids = [x["id"] for x in cur]
+    assert cf_id in ids
+
+    r = requests.post(f"{BASE}/api/fronting/end/{cf_id}", headers=H)
+    assert r.status_code == 200
+
+    r = requests.get(f"{BASE}/api/fronting/history", headers=H)
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+# ---- Journal ----
+def test_journal_crud(state):
+    r = requests.post(f"{BASE}/api/journal", json={"title": "TEST_j", "body": "hi", "mood": "calm", "symptoms": ["fatigue"], "alter_id": state["alter_id"], "shared_with_alters": True}, headers=H)
+    assert r.status_code == 200
+    jid = r.json()["id"]
+    state["jid"] = jid
+
+    r = requests.get(f"{BASE}/api/journal", headers=H)
+    assert r.status_code == 200
+    assert any(x["id"] == jid for x in r.json())
+
+    r = requests.delete(f"{BASE}/api/journal/{jid}", headers=H)
+    assert r.status_code == 200
+
+
+# ---- Friends + Share ----
+def test_friend_and_share(state):
+    payload = {"name": "TEST_friend", "can_see_alter_ids": [state["alter_id"]], "show_current_fronter": True, "show_pronouns": True, "show_roles": True, "show_descriptions": False, "show_journal": False}
+    r = requests.post(f"{BASE}/api/friends", json=payload, headers=H)
+    assert r.status_code == 200
+    fr = r.json()
+    state["share_token"] = fr["share_token"]
+    state["friend_id"] = fr["id"]
+
+    # public share - no auth
+    r = requests.get(f"{BASE}/api/share/{state['share_token']}")
+    assert r.status_code == 200
+    data = r.json()
+    # only the allowed alter should be visible
+    names = [a["name"] for a in data["alters"]]
+    assert "TEST_Alice2" in names
+    assert "TEST_Bob" not in names
+    # descriptions should NOT be present
+    for a in data["alters"]:
+        assert "description" not in a
+        assert "pronouns" in a
+
+    r = requests.put(f"{BASE}/api/friends/{state['friend_id']}", json={**payload, "show_descriptions": True}, headers=H)
+    assert r.status_code == 200
+
+    r = requests.get(f"{BASE}/api/share/{state['share_token']}")
+    assert any("description" in a for a in r.json()["alters"])
+
+
+# ---- Simply Plural import ----
+def test_import_sp():
+    r = requests.post(f"{BASE}/api/import/simply-plural", json={"data": {"members": [{"name": "TEST_SP1", "pronouns": "xe/xem", "color": "#A96F5D", "desc": "protector"}]}}, headers=H)
+    assert r.status_code == 200
+    assert r.json()["imported"] == 1
+
+
+# ---- Export ----
+def test_export():
+    r = requests.get(f"{BASE}/api/export", headers=H)
+    assert r.status_code == 200
+    d = r.json()
+    for k in ["alters", "fronting", "journal", "friends"]:
+        assert k in d
+
+
+# ---- Cleanup ----
+def test_cleanup(state):
+    requests.delete(f"{BASE}/api/friends/{state['friend_id']}", headers=H)
+    requests.delete(f"{BASE}/api/alters/{state['alter_id']}", headers=H)
+    requests.delete(f"{BASE}/api/alters/{state['alter2']}", headers=H)

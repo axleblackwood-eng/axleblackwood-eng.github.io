@@ -1,0 +1,328 @@
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { Plus, Copy, Eye, Trash2, X, ExternalLink } from "lucide-react";
+import { toast } from "sonner";
+import { motion } from "framer-motion";
+
+const emptyForm = {
+  name: "",
+  email: "",
+  note: "",
+  can_see_alter_ids: [],
+  show_current_fronter: true,
+  show_pronouns: true,
+  show_roles: true,
+  show_descriptions: false,
+  show_journal: false,
+};
+
+export default function Friends() {
+  const [friends, setFriends] = useState([]);
+  const [alters, setAlters] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+
+  const load = async () => {
+    const [f, a] = await Promise.all([api.get("/friends"), api.get("/alters")]);
+    setFriends(f.data);
+    setAlters(a.data);
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const startEdit = (f) => {
+    setEditing(f.id);
+    setForm({
+      name: f.name,
+      email: f.email || "",
+      note: f.note || "",
+      can_see_alter_ids: f.can_see_alter_ids || [],
+      show_current_fronter: f.show_current_fronter,
+      show_pronouns: f.show_pronouns,
+      show_roles: f.show_roles,
+      show_descriptions: f.show_descriptions,
+      show_journal: f.show_journal,
+    });
+    setShowForm(true);
+  };
+
+  const toggleAlter = (id) => {
+    setForm((f) => ({
+      ...f,
+      can_see_alter_ids: f.can_see_alter_ids.includes(id)
+        ? f.can_see_alter_ids.filter((x) => x !== id)
+        : [...f.can_see_alter_ids, id],
+    }));
+  };
+
+  const submit = async () => {
+    if (!form.name.trim()) {
+      toast.error("Give this friend a name");
+      return;
+    }
+    if (editing) {
+      await api.put(`/friends/${editing}`, form);
+      toast.success("Updated");
+    } else {
+      await api.post("/friends", form);
+      toast.success("Friend bucket created");
+    }
+    setShowForm(false);
+    setEditing(null);
+    setForm(emptyForm);
+    load();
+  };
+
+  const remove = async (id) => {
+    if (!confirm("Remove this friend's access?")) return;
+    await api.delete(`/friends/${id}`);
+    load();
+  };
+
+  const copyLink = (token) => {
+    const url = `${window.location.origin}/share/${token}`;
+    navigator.clipboard.writeText(url);
+    toast.success("Link copied");
+  };
+
+  return (
+    <div className="space-y-10" data-testid="friends-page">
+      <header className="flex items-end justify-between flex-wrap gap-4">
+        <div>
+          <span className="label-eyebrow">trusted people</span>
+          <h1 className="font-serif text-5xl font-light mt-3">Friends</h1>
+          <p className="text-[color:var(--text-secondary)] mt-3 max-w-xl">
+            Build a privacy bucket for each friend. Choose exactly which alters
+            and details they can see — then share their private link.
+          </p>
+        </div>
+        <button
+          data-testid="add-friend-button"
+          className="btn-primary"
+          onClick={() => {
+            setEditing(null);
+            setForm(emptyForm);
+            setShowForm(true);
+          }}
+        >
+          <Plus size={15} /> New friend
+        </button>
+      </header>
+
+      {showForm && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="surface p-7 space-y-6"
+          data-testid="friend-form"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="font-serif text-2xl">
+              {editing ? "Edit privacy bucket" : "New privacy bucket"}
+            </h2>
+            <button
+              onClick={() => {
+                setShowForm(false);
+                setEditing(null);
+              }}
+              className="btn-ghost !p-2"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label-eyebrow">friend name</label>
+              <input
+                data-testid="friend-name-input"
+                className="input-cozy mt-2"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label-eyebrow">friend email (optional)</label>
+              <input
+                data-testid="friend-email-input"
+                type="email"
+                className="input-cozy mt-2"
+                placeholder="for self-serve sign-in"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+              />
+              <p className="text-xs text-[color:var(--text-disabled)] mt-1.5">
+                If they sign in to pluralhaven with this email, this bucket
+                shows up under their "Supporting" tab.
+              </p>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="label-eyebrow">private note</label>
+              <input
+                data-testid="friend-note-input"
+                className="input-cozy mt-2"
+                placeholder="e.g. partner, therapist…"
+                value={form.note}
+                onChange={(e) => setForm({ ...form, note: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="label-eyebrow">visible headmates</label>
+            <p className="text-xs text-[color:var(--text-secondary)] mt-2">
+              Only the alters you tick will appear in this friend's view.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {alters.length === 0 && (
+                <p className="text-sm text-[color:var(--text-secondary)]">
+                  Add headmates first.
+                </p>
+              )}
+              {alters.map((a) => {
+                const on = form.can_see_alter_ids.includes(a.id);
+                return (
+                  <button
+                    key={a.id}
+                    data-testid={`toggle-alter-${a.id}`}
+                    onClick={() => toggleAlter(a.id)}
+                    className="flex items-center gap-2 px-3.5 py-2 rounded-full border transition-all text-sm"
+                    style={{
+                      borderColor: on ? a.color : "var(--border-default)",
+                      background: on ? a.color + "22" : "var(--bg-flat)",
+                    }}
+                  >
+                    <span className="dot" style={{ background: a.color }} />
+                    {a.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="label-eyebrow">what they can see</label>
+            <div className="mt-3 grid sm:grid-cols-2 gap-2">
+              {[
+                ["show_current_fronter", "who's currently fronting"],
+                ["show_pronouns", "pronouns"],
+                ["show_roles", "roles"],
+                ["show_descriptions", "descriptions"],
+                ["show_journal", "shared journal entries"],
+              ].map(([k, label]) => (
+                <label
+                  key={k}
+                  className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer"
+                  style={{ borderColor: "var(--border-default)" }}
+                >
+                  <input
+                    data-testid={`toggle-${k}`}
+                    type="checkbox"
+                    checked={form[k]}
+                    onChange={(e) =>
+                      setForm({ ...form, [k]: e.target.checked })
+                    }
+                  />
+                  <span className="text-sm">{label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              data-testid="save-friend-button"
+              className="btn-primary"
+              onClick={submit}
+            >
+              Save bucket
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                setShowForm(false);
+                setEditing(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {friends.length === 0 ? (
+        <div className="surface-flat p-10 text-center text-[color:var(--text-secondary)]">
+          No friends added yet. Create a bucket to share a curated view.
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-5" data-testid="friends-grid">
+          {friends.map((f) => (
+            <div
+              key={f.id}
+              className="surface-flat p-6 space-y-4"
+              data-testid={`friend-card-${f.id}`}
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="font-serif text-2xl">{f.name}</p>
+                  {f.note && (
+                    <p className="text-xs text-[color:var(--text-secondary)] mt-1">
+                      {f.note}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    data-testid={`edit-friend-${f.id}`}
+                    className="btn-ghost !p-2"
+                    onClick={() => startEdit(f)}
+                  >
+                    <Eye size={13} />
+                  </button>
+                  <button
+                    data-testid={`delete-friend-${f.id}`}
+                    className="btn-ghost !p-2"
+                    onClick={() => remove(f.id)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+              <p className="text-sm text-[color:var(--text-secondary)]">
+                Sees {f.can_see_alter_ids.length} headmate
+                {f.can_see_alter_ids.length === 1 ? "" : "s"} ·{" "}
+                {[
+                  f.show_current_fronter && "fronter",
+                  f.show_journal && "journal",
+                  f.show_descriptions && "bios",
+                ]
+                  .filter(Boolean)
+                  .join(", ") || "minimal"}
+              </p>
+              <div className="flex gap-2 pt-2">
+                <button
+                  data-testid={`copy-link-${f.id}`}
+                  className="btn-ghost !text-xs"
+                  onClick={() => copyLink(f.share_token)}
+                >
+                  <Copy size={12} /> Copy link
+                </button>
+                <a
+                  data-testid={`open-link-${f.id}`}
+                  className="btn-ghost !text-xs"
+                  href={`/share/${f.share_token}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink size={12} /> Preview
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,862 @@
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Header, Query
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import logging
+import uuid
+import json
+import httpx
+import requests
+from pathlib import Path
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timezone, timedelta
+
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+# MongoDB connection
+mongo_url = os.environ["MONGO_URL"]
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ["DB_NAME"]]
+
+# Object storage
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = os.environ.get("APP_NAME", "pluralhaven")
+_storage_key: Optional[str] = None
+
+
+def init_storage() -> Optional[str]:
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    if not EMERGENT_KEY:
+        return None
+    try:
+        resp = requests.post(
+            f"{STORAGE_URL}/init",
+            json={"emergent_key": EMERGENT_KEY},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        _storage_key = resp.json()["storage_key"]
+        return _storage_key
+    except Exception as e:
+        logging.error(f"Storage init failed: {e}")
+        return None
+
+
+def put_object(path: str, data: bytes, content_type: str) -> Dict[str, Any]:
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not configured")
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data,
+        timeout=120,
+    )
+    if resp.status_code == 403:
+        # try to refresh key
+        global _storage_key
+        _storage_key = None
+        key = init_storage()
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data,
+            timeout=120,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not configured")
+    resp = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key},
+        timeout=60,
+    )
+    if resp.status_code == 403:
+        global _storage_key
+        _storage_key = None
+        key = init_storage()
+        resp = requests.get(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key},
+            timeout=60,
+        )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
+
+
+# ----- helpers -----
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso(dt: datetime) -> str:
+    return dt.isoformat()
+
+
+# ----- Models -----
+class User(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+    created_at: str
+
+
+class Alter(BaseModel):
+    id: str = Field(default_factory=lambda: f"alt_{uuid.uuid4().hex[:12]}")
+    user_id: str
+    name: str
+    pronouns: Optional[str] = ""
+    role: Optional[str] = ""
+    description: Optional[str] = ""
+    color: Optional[str] = "#7C9082"
+    avatar_url: Optional[str] = ""
+    is_archived: bool = False
+    created_at: str = Field(default_factory=lambda: iso(now_utc()))
+
+
+class AlterCreate(BaseModel):
+    name: str
+    pronouns: Optional[str] = ""
+    role: Optional[str] = ""
+    description: Optional[str] = ""  # markdown / safe HTML
+    color: Optional[str] = "#7C9082"
+    avatar_url: Optional[str] = ""
+
+
+class FrontingEntry(BaseModel):
+    id: str = Field(default_factory=lambda: f"fr_{uuid.uuid4().hex[:12]}")
+    user_id: str
+    alter_id: str
+    alter_name: str
+    alter_color: str
+    started_at: str = Field(default_factory=lambda: iso(now_utc()))
+    ended_at: Optional[str] = None
+    note: Optional[str] = ""
+
+
+class FrontingStart(BaseModel):
+    alter_id: str
+    note: Optional[str] = ""
+
+
+class JournalEntry(BaseModel):
+    id: str = Field(default_factory=lambda: f"j_{uuid.uuid4().hex[:12]}")
+    user_id: str
+    title: Optional[str] = ""
+    body: str
+    mood: Optional[str] = ""  # e.g. "calm", "anxious"
+    symptoms: List[str] = []
+    alter_id: Optional[str] = None  # who wrote/relates to
+    shared_with_alters: bool = True
+    created_at: str = Field(default_factory=lambda: iso(now_utc()))
+
+
+class JournalCreate(BaseModel):
+    title: Optional[str] = ""
+    body: str
+    mood: Optional[str] = ""
+    symptoms: List[str] = []
+    alter_id: Optional[str] = None
+    shared_with_alters: bool = True
+
+
+class Friend(BaseModel):
+    id: str = Field(default_factory=lambda: f"fnd_{uuid.uuid4().hex[:12]}")
+    user_id: str
+    name: str
+    email: Optional[str] = ""
+    note: Optional[str] = ""
+    share_token: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    # privacy bucket
+    can_see_alter_ids: List[str] = []  # which alters this friend can see
+    show_current_fronter: bool = True
+    show_pronouns: bool = True
+    show_roles: bool = True
+    show_descriptions: bool = False
+    show_journal: bool = False
+    created_at: str = Field(default_factory=lambda: iso(now_utc()))
+
+
+class FriendCreate(BaseModel):
+    name: str
+    email: Optional[str] = ""
+    note: Optional[str] = ""
+    can_see_alter_ids: List[str] = []
+    show_current_fronter: bool = True
+    show_pronouns: bool = True
+    show_roles: bool = True
+    show_descriptions: bool = False
+    show_journal: bool = False
+
+
+# ----- Auth -----
+async def get_session_token(request: Request) -> Optional[str]:
+    token = request.cookies.get("session_token")
+    if token:
+        return token
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1]
+    return None
+
+
+async def get_current_user(request: Request) -> Dict[str, Any]:
+    token = await get_session_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < now_utc():
+        raise HTTPException(status_code=401, detail="Session expired")
+    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+class SessionExchange(BaseModel):
+    session_id: str
+
+
+@api_router.post("/auth/session")
+async def auth_session(payload: SessionExchange, response: Response):
+    """Exchange Emergent session_id for a session_token cookie."""
+    async with httpx.AsyncClient(timeout=15) as hx:
+        r = await hx.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": payload.session_id},
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid session_id")
+        data = r.json()
+
+    email = data["email"]
+    name = data.get("name") or email
+    picture = data.get("picture") or ""
+    session_token = data["session_token"]
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one(
+            {
+                "user_id": user_id,
+                "email": email,
+                "name": name,
+                "picture": picture,
+                "created_at": iso(now_utc()),
+            }
+        )
+
+    expires_at = now_utc() + timedelta(days=7)
+    await db.user_sessions.insert_one(
+        {
+            "user_id": user_id,
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": iso(now_utc()),
+        }
+    )
+
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        max_age=7 * 24 * 3600,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+    )
+
+    return {
+        "user_id": user_id,
+        "email": email,
+        "name": name,
+        "picture": picture,
+    }
+
+
+@api_router.get("/auth/me")
+async def auth_me(user: Dict[str, Any] = Depends(get_current_user)):
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "name": user["name"],
+        "picture": user.get("picture", ""),
+        "display_name": user.get("display_name", ""),
+        "bio": user.get("bio", ""),
+        "system_name": user.get("system_name", ""),
+        "pronouns": user.get("pronouns", ""),
+    }
+
+
+class ProfileUpdate(BaseModel):
+    display_name: Optional[str] = ""
+    system_name: Optional[str] = ""
+    pronouns: Optional[str] = ""
+    bio: Optional[str] = ""  # markdown / safe HTML
+
+
+@api_router.put("/profile")
+async def update_profile(
+    payload: ProfileUpdate, user: Dict[str, Any] = Depends(get_current_user)
+):
+    updates = payload.model_dump()
+    await db.users.update_one(
+        {"user_id": user["user_id"]}, {"$set": updates}
+    )
+    out = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {
+        "user_id": out["user_id"],
+        "email": out["email"],
+        "name": out["name"],
+        "picture": out.get("picture", ""),
+        "display_name": out.get("display_name", ""),
+        "bio": out.get("bio", ""),
+        "system_name": out.get("system_name", ""),
+        "pronouns": out.get("pronouns", ""),
+    }
+
+
+@api_router.delete("/account")
+async def delete_account(user: Dict[str, Any] = Depends(get_current_user)):
+    uid = user["user_id"]
+    await db.alters.delete_many({"user_id": uid})
+    await db.fronting.delete_many({"user_id": uid})
+    await db.journal.delete_many({"user_id": uid})
+    await db.friends.delete_many({"user_id": uid})
+    await db.user_sessions.delete_many({"user_id": uid})
+    await db.users.delete_one({"user_id": uid})
+    return {"ok": True}
+
+
+@api_router.get("/alters/{alter_id}")
+async def get_alter(alter_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    a = await db.alters.find_one(
+        {"id": alter_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not a:
+        raise HTTPException(status_code=404, detail="Alter not found")
+    # include their recent fronting + journal
+    recent = (
+        await db.fronting.find(
+            {"user_id": user["user_id"], "alter_id": alter_id}, {"_id": 0}
+        )
+        .sort("started_at", -1)
+        .to_list(10)
+    )
+    journal = (
+        await db.journal.find(
+            {"user_id": user["user_id"], "alter_id": alter_id}, {"_id": 0}
+        )
+        .sort("created_at", -1)
+        .to_list(20)
+    )
+    return {"alter": a, "fronting": recent, "journal": journal}
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    token = await get_session_token(request)
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie("session_token", path="/")
+    return {"ok": True}
+
+
+# ----- Alters -----
+@api_router.get("/alters")
+async def list_alters(user: Dict[str, Any] = Depends(get_current_user)):
+    items = await db.alters.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+    return items
+
+
+@api_router.post("/alters")
+async def create_alter(
+    payload: AlterCreate, user: Dict[str, Any] = Depends(get_current_user)
+):
+    alter = Alter(user_id=user["user_id"], **payload.model_dump())
+    await db.alters.insert_one(alter.model_dump())
+    return alter.model_dump()
+
+
+@api_router.put("/alters/{alter_id}")
+async def update_alter(
+    alter_id: str,
+    payload: AlterCreate,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    existing = await db.alters.find_one(
+        {"id": alter_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Alter not found")
+    updates = payload.model_dump()
+    await db.alters.update_one(
+        {"id": alter_id, "user_id": user["user_id"]}, {"$set": updates}
+    )
+    existing.update(updates)
+    return existing
+
+
+@api_router.delete("/alters/{alter_id}")
+async def delete_alter(
+    alter_id: str, user: Dict[str, Any] = Depends(get_current_user)
+):
+    await db.alters.delete_one({"id": alter_id, "user_id": user["user_id"]})
+    return {"ok": True}
+
+
+# ----- Fronting -----
+@api_router.get("/fronting/current")
+async def current_fronting(user: Dict[str, Any] = Depends(get_current_user)):
+    items = (
+        await db.fronting.find(
+            {"user_id": user["user_id"], "ended_at": None}, {"_id": 0}
+        )
+        .sort("started_at", -1)
+        .to_list(50)
+    )
+    return items
+
+
+@api_router.post("/fronting/switch")
+async def front_switch(
+    payload: FrontingStart, user: Dict[str, Any] = Depends(get_current_user)
+):
+    alter = await db.alters.find_one(
+        {"id": payload.alter_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not alter:
+        raise HTTPException(status_code=404, detail="Alter not found")
+
+    # end any currently fronting
+    await db.fronting.update_many(
+        {"user_id": user["user_id"], "ended_at": None},
+        {"$set": {"ended_at": iso(now_utc())}},
+    )
+
+    entry = FrontingEntry(
+        user_id=user["user_id"],
+        alter_id=alter["id"],
+        alter_name=alter["name"],
+        alter_color=alter.get("color", "#7C9082"),
+        note=payload.note or "",
+    )
+    await db.fronting.insert_one(entry.model_dump())
+    return entry.model_dump()
+
+
+@api_router.post("/fronting/cofront")
+async def co_front(
+    payload: FrontingStart, user: Dict[str, Any] = Depends(get_current_user)
+):
+    # add another fronter without ending others
+    alter = await db.alters.find_one(
+        {"id": payload.alter_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not alter:
+        raise HTTPException(status_code=404, detail="Alter not found")
+    entry = FrontingEntry(
+        user_id=user["user_id"],
+        alter_id=alter["id"],
+        alter_name=alter["name"],
+        alter_color=alter.get("color", "#7C9082"),
+        note=payload.note or "",
+    )
+    await db.fronting.insert_one(entry.model_dump())
+    return entry.model_dump()
+
+
+@api_router.post("/fronting/end/{entry_id}")
+async def end_fronting(
+    entry_id: str, user: Dict[str, Any] = Depends(get_current_user)
+):
+    await db.fronting.update_one(
+        {"id": entry_id, "user_id": user["user_id"], "ended_at": None},
+        {"$set": {"ended_at": iso(now_utc())}},
+    )
+    return {"ok": True}
+
+
+@api_router.get("/fronting/history")
+async def fronting_history(
+    limit: int = 100, user: Dict[str, Any] = Depends(get_current_user)
+):
+    items = (
+        await db.fronting.find({"user_id": user["user_id"]}, {"_id": 0})
+        .sort("started_at", -1)
+        .to_list(limit)
+    )
+    return items
+
+
+# ----- Journal -----
+@api_router.get("/journal")
+async def list_journal(user: Dict[str, Any] = Depends(get_current_user)):
+    items = (
+        await db.journal.find({"user_id": user["user_id"]}, {"_id": 0})
+        .sort("created_at", -1)
+        .to_list(1000)
+    )
+    return items
+
+
+@api_router.post("/journal")
+async def create_journal(
+    payload: JournalCreate, user: Dict[str, Any] = Depends(get_current_user)
+):
+    entry = JournalEntry(user_id=user["user_id"], **payload.model_dump())
+    await db.journal.insert_one(entry.model_dump())
+    return entry.model_dump()
+
+
+@api_router.delete("/journal/{entry_id}")
+async def delete_journal(
+    entry_id: str, user: Dict[str, Any] = Depends(get_current_user)
+):
+    await db.journal.delete_one({"id": entry_id, "user_id": user["user_id"]})
+    return {"ok": True}
+
+
+# ----- Friends / Privacy Buckets -----
+@api_router.get("/friends")
+async def list_friends(user: Dict[str, Any] = Depends(get_current_user)):
+    items = await db.friends.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(
+        500
+    )
+    return items
+
+
+@api_router.post("/friends")
+async def create_friend(
+    payload: FriendCreate, user: Dict[str, Any] = Depends(get_current_user)
+):
+    friend = Friend(user_id=user["user_id"], **payload.model_dump())
+    await db.friends.insert_one(friend.model_dump())
+    return friend.model_dump()
+
+
+@api_router.put("/friends/{friend_id}")
+async def update_friend(
+    friend_id: str,
+    payload: FriendCreate,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    existing = await db.friends.find_one(
+        {"id": friend_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Friend not found")
+    updates = payload.model_dump()
+    await db.friends.update_one(
+        {"id": friend_id, "user_id": user["user_id"]}, {"$set": updates}
+    )
+    existing.update(updates)
+    return existing
+
+
+@api_router.delete("/friends/{friend_id}")
+async def delete_friend(
+    friend_id: str, user: Dict[str, Any] = Depends(get_current_user)
+):
+    await db.friends.delete_one({"id": friend_id, "user_id": user["user_id"]})
+    return {"ok": True}
+
+
+# ----- Public Share view (no auth) -----
+@api_router.get("/share/{share_token}")
+async def share_view(share_token: str):
+    friend = await db.friends.find_one({"share_token": share_token}, {"_id": 0})
+    if not friend:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    owner = await db.users.find_one({"user_id": friend["user_id"]}, {"_id": 0})
+    allowed_ids = set(friend.get("can_see_alter_ids", []))
+    alters = await db.alters.find(
+        {"user_id": friend["user_id"], "id": {"$in": list(allowed_ids)}},
+        {"_id": 0},
+    ).to_list(1000)
+    visible_alters = []
+    for a in alters:
+        ent = {"id": a["id"], "name": a["name"], "color": a.get("color", "#7C9082")}
+        if friend.get("show_pronouns"):
+            ent["pronouns"] = a.get("pronouns", "")
+        if friend.get("show_roles"):
+            ent["role"] = a.get("role", "")
+        if friend.get("show_descriptions"):
+            ent["description"] = a.get("description", "")
+        if a.get("avatar_url"):
+            ent["avatar_url"] = a.get("avatar_url", "")
+        visible_alters.append(ent)
+
+    current = []
+    if friend.get("show_current_fronter"):
+        front_items = (
+            await db.fronting.find(
+                {"user_id": friend["user_id"], "ended_at": None}, {"_id": 0}
+            )
+            .sort("started_at", -1)
+            .to_list(50)
+        )
+        current = [
+            {
+                "alter_id": f["alter_id"],
+                "alter_name": f["alter_name"],
+                "alter_color": f["alter_color"],
+                "started_at": f["started_at"],
+            }
+            for f in front_items
+            if f["alter_id"] in allowed_ids
+        ]
+
+    journal_preview = []
+    if friend.get("show_journal"):
+        items = (
+            await db.journal.find(
+                {"user_id": friend["user_id"], "shared_with_alters": True}, {"_id": 0}
+            )
+            .sort("created_at", -1)
+            .to_list(20)
+        )
+        journal_preview = [
+            {
+                "title": it.get("title", ""),
+                "body": it.get("body", ""),
+                "mood": it.get("mood", ""),
+                "created_at": it["created_at"],
+            }
+            for it in items
+        ]
+
+    return {
+        "system_name": (owner and (owner.get("system_name") or owner.get("name"))) or "System",
+        "system_bio": (owner or {}).get("bio", ""),
+        "friend_name": friend["name"],
+        "current_fronters": current,
+        "alters": visible_alters,
+        "journal": journal_preview,
+        "settings": {
+            "show_current_fronter": friend.get("show_current_fronter", True),
+            "show_journal": friend.get("show_journal", False),
+        },
+    }
+
+
+# ----- Simply Plural import -----
+class SimplyPluralImport(BaseModel):
+    data: Dict[str, Any]
+
+
+@api_router.post("/import/simply-plural")
+async def import_simply_plural(
+    payload: SimplyPluralImport, user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Import members from a Simply Plural export. We accept either:
+    - { "members": [ ... ] }
+    - { "data": [ ... ] }
+    - a list at top-level
+    Each member typically has: name, pronouns, desc, color, avatarUrl, info.
+    """
+    data = payload.data
+    members = []
+    if isinstance(data, list):
+        members = data
+    elif isinstance(data, dict):
+        if "members" in data and isinstance(data["members"], list):
+            members = data["members"]
+        elif "data" in data and isinstance(data["data"], list):
+            members = data["data"]
+        else:
+            # search nested
+            for v in data.values():
+                if isinstance(v, list):
+                    members = v
+                    break
+
+    imported = 0
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        # Simply Plural sometimes nests under "content"
+        content = m.get("content", m)
+        name = content.get("name") or m.get("name")
+        if not name:
+            continue
+        alter = Alter(
+            user_id=user["user_id"],
+            name=name,
+            pronouns=content.get("pronouns", "") or "",
+            role=content.get("role", "") or "",
+            description=content.get("desc") or content.get("description") or "",
+            color=content.get("color") or "#7C9082",
+            avatar_url=content.get("avatarUrl") or content.get("avatar_url") or "",
+        )
+        await db.alters.insert_one(alter.model_dump())
+        imported += 1
+    return {"imported": imported}
+
+
+# ----- Export -----
+@api_router.get("/export")
+async def export_all(user: Dict[str, Any] = Depends(get_current_user)):
+    alters = await db.alters.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(
+        5000
+    )
+    fronting = await db.fronting.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).to_list(50000)
+    journal = await db.journal.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(
+        50000
+    )
+    friends = await db.friends.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(
+        500
+    )
+    return {
+        "exported_at": iso(now_utc()),
+        "alters": alters,
+        "fronting": fronting,
+        "journal": journal,
+        "friends": friends,
+    }
+
+
+@api_router.get("/")
+async def root():
+    return {"app": "plural-cozy", "ok": True}
+
+
+# ----- Avatar upload (object storage) -----
+@api_router.post("/upload/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only images allowed")
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Max 5MB")
+    ext = (file.filename or "img").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "png"
+    if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
+        ext = "png"
+    path = f"{APP_NAME}/avatars/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    result = put_object(path, data, file.content_type)
+    await db.files.insert_one(
+        {
+            "id": uuid.uuid4().hex,
+            "user_id": user["user_id"],
+            "storage_path": result["path"],
+            "content_type": file.content_type,
+            "size": result.get("size", len(data)),
+            "is_deleted": False,
+            "created_at": iso(now_utc()),
+        }
+    )
+    return {"path": result["path"], "url": f"/api/files/{result['path']}"}
+
+
+@api_router.get("/files/{path:path}")
+async def download_file(
+    path: str,
+    authorization: Optional[str] = Header(None),
+    auth: Optional[str] = Query(None),
+):
+    record = await db.files.find_one(
+        {"storage_path": path, "is_deleted": False}, {"_id": 0}
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    data, content_type = get_object(path)
+    return Response(
+        content=data,
+        media_type=record.get("content_type", content_type),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ----- Friend self-serve "supporting" view -----
+@api_router.get("/supporting")
+async def supporting(user: Dict[str, Any] = Depends(get_current_user)):
+    """List systems that have invited the current user (by email) as a friend."""
+    if not user.get("email"):
+        return []
+    buckets = await db.friends.find(
+        {"email": user["email"]}, {"_id": 0}
+    ).to_list(500)
+    out = []
+    for b in buckets:
+        owner = await db.users.find_one(
+            {"user_id": b["user_id"]}, {"_id": 0}
+        )
+        out.append(
+            {
+                "id": b["id"],
+                "share_token": b["share_token"],
+                "system_name": owner["name"] if owner else "System",
+                "system_picture": (owner or {}).get("picture", ""),
+                "friend_label": b.get("note", ""),
+            }
+        )
+    return out
+
+
+# ----- mount -----
+app.include_router(api_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        init_storage()
+        logger.info("Storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")

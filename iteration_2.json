@@ -1,0 +1,49 @@
+import { useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { api } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { Loader2 } from "lucide-react";
+
+export default function AuthCallback() {
+  const navigate = useNavigate();
+  const { setUser } = useAuth();
+  const hasProcessed = useRef(false);
+
+  useEffect(() => {
+    if (hasProcessed.current) return;
+    hasProcessed.current = true;
+
+    const hash = window.location.hash || "";
+    const params = new URLSearchParams(hash.replace(/^#/, ""));
+    const sessionId = params.get("session_id");
+
+    const run = async () => {
+      if (!sessionId) {
+        navigate("/", { replace: true });
+        return;
+      }
+      try {
+        const res = await api.post("/auth/session", { session_id: sessionId });
+        setUser(res.data);
+        // clear hash & route to dashboard
+        window.history.replaceState({}, "", "/dashboard");
+        navigate("/dashboard", { replace: true, state: { user: res.data } });
+      } catch (e) {
+        navigate("/", { replace: true });
+      }
+    };
+    run();
+  }, [navigate, setUser]);
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center"
+      data-testid="auth-callback-loading"
+    >
+      <div className="flex items-center gap-3 text-[color:var(--text-secondary)]">
+        <Loader2 className="animate-spin" size={20} />
+        <span>Settling you in…</span>
+      </div>
+    </div>
+  );
+}
